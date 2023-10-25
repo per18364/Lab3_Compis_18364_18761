@@ -4,9 +4,11 @@ from yaplParser import yaplParser
 from yaplListener import yaplListener
 from antlr4.tree.Trees import Trees
 from antlr4.error.ErrorListener import ErrorListener
+from yaplVisitor import yaplVisitor
 from graphviz import Digraph
 import os
 import pprint
+import re
 
 
 def visualize_tree(tree, filename):
@@ -109,15 +111,15 @@ class MyListener(yaplListener):
 
     def exitMethodDeclaration(self, ctx: yaplParser.MethodDeclarationContext):
         print("Saliendo de MethodDeclaration")
-        self.symbol_table.exit_scope()  # Salir del ámbito del método
+        # self.symbol_table.exit_scope()  # Salir del ámbito del método
 
     def enterBlock(self, ctx: yaplParser.BlockContext):
         print("Entrando en Block")
-        self.symbol_table.enter_scope()  # Nuevo ámbito para el bloque
+        # self.symbol_table.enter_scope()  # Nuevo ámbito para el bloque
 
     def exitBlock(self, ctx: yaplParser.BlockContext):
         print("Saliendo de Block")
-        self.symbol_table.exit_scope()  # Salir del ámbito del bloque
+        # self.symbol_table.exit_scope()  # Salir del ámbito del bloque
 
     def enterAttributeDeclaration(self, ctx: yaplParser.AttributeDeclarationContext):
         print("Entrando en AttributeDeclaration")
@@ -126,6 +128,226 @@ class MyListener(yaplListener):
         type_ctx = ctx.getChild(0)
         type_text = type_ctx.getText()  # Esto devuelve el texto del tipo
         self.symbol_table.declare(symbol, type_text)
+
+    def enterVariableDeclaration(self, ctx: yaplParser.VariableDeclarationContext):
+        print("Entrando en VariableDeclaration")
+        symbol = ctx.ID().getText()
+        # print("symbol: ", symbol)
+        # Esto devuelve el primer hijo, que debe ser el contexto de 'type'
+        type_ctx = ctx.getChild(0)
+        type_text = type_ctx.getText()
+        # print("type_text: ", type_text)
+        self.symbol_table.declare(symbol, type_text)
+
+
+class MyVisitor(yaplVisitor):
+    def __init__(self):
+        self.code = {}
+        self.class_name = ""
+        self.method_name = ""
+        self.cuadruplos = []
+        self.temp_count = 0
+        self.call = False
+
+    def new_temp(self):
+        # Función para generar un nuevo nombre de variable temporal
+        self.temp_count += 1
+        return f"t{self.temp_count}"
+
+    def visitProgram(self, ctx: yaplParser.ProgramContext):
+        print("Entrando en Program")
+        return self.visitChildren(ctx)
+
+    def visitClassDeclaration(self, ctx: yaplParser.ClassDeclarationContext):
+        # print("visitClassDeclaration")
+        self.class_name = ctx.TYPE_ID()[0].getText()
+        self.method_name = ""
+        # print(self.class_name)
+        self.code[self.class_name] = []
+        self.code[self.class_name].append("BeginFuc_")
+        self.visitChildren(ctx)
+        self.code[self.class_name].append("EndFunc_")
+
+    def visitMethodDeclaration(self, ctx: yaplParser.MethodDeclarationContext):
+        print("visitMethodDeclaration")
+        if self.method_name != "":
+            self.method_name = ""
+        self.method_name = ctx.ID().getText()
+        # print(self.method_name)
+        self.code[self.class_name].append(
+            {f"{self.class_name}.{self.method_name}:": []})
+        self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"].append(
+            "BeginFuc_")
+        self.visitChildren(ctx)
+        self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"].append(
+            "EndFunc_")
+        self.method_name = ""
+
+    def visitMethodCallStatement(self, ctx: yaplParser.MethodCallStatementContext):
+        print("visitMethodCallStatement")
+        print(ctx.getText())
+        method_name = ctx.ID().getText()
+        if self.method_name:
+            target_code = self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"]
+        else:
+            target_code = self.code[self.class_name]
+
+        if ctx.expressionList():
+            for expression in ctx.expressionList().expression():
+                temp = self.new_temp()
+                self.cuadruplos.append(
+                    ('PARAM', expression.getText(), '-', temp))
+                target_code.append(
+                    f"{temp} = {expression.getText()}")
+                target_code.append(
+                    f"PUSHPARAM {temp}")
+                self.cuadruplos.append(
+                    ('PUSHPARAM', temp, '-', '-'))
+            self.cuadruplos.append(('CALL', method_name, '-', '-'))
+
+        if self.call:
+            self.call = False
+            return f"LCall {method_name}()"
+        else:
+            target_code.append(
+                f"LCall {method_name}()")
+
+    def visitBlock(self, ctx: yaplParser.BlockContext):
+        print("Entrando en Block")
+        return self.visitChildren(ctx)
+
+    def visitAttributeDeclaration(self, ctx: yaplParser.AttributeDeclarationContext):
+        print("visitAttributeDeclaration")
+        var_name = ctx.ID().getText()
+        print(var_name)
+        if ctx.ID():
+            expression_result = ctx.type_().getText()
+            self.code[self.class_name].append(
+                f"{var_name} = {expression_result}")
+
+            self.cuadruplos.append(
+                ('ASSIGN', expression_result, '-', var_name))
+
+    def visitAssignmentDeclaration(self, ctx: yaplParser.AssignmentDeclarationContext):
+        print("visitAssignmentDeclaration")
+        var_name = ctx.ID().getText()
+        expression_result = ctx.expression().getText()
+        children = self.visit(ctx.expression())
+        print(children)
+
+        if children:
+            self.code[self.class_name].append(
+                f"{var_name} = {children}")
+
+            self.cuadruplos.append(
+                ('ASSIGN', children, '-', var_name))
+        else:
+            self.code[self.class_name].append(
+                f"{var_name} = {expression_result}")
+            self.cuadruplos.append(('<-', expression_result, '-', var_name))
+
+    def visitVariableDeclaration(self, ctx: yaplParser.VariableDeclarationContext):
+        print("visitVariableDeclaration")
+        print(ctx.getText())
+        var_name = ctx.ID().getText()
+        print(var_name)
+        expression_result = ctx.type_().getText()
+        if self.method_name:
+            target_code = self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"]
+        else:
+            target_code = self.code[self.class_name]
+
+        if ctx.statement():
+            target_code.append(
+                f"{var_name} = {expression_result}")
+            self.cuadruplos.append(
+                ('ASSIGN', expression_result, '-', var_name))
+            if re.search(r'[\+\-\*\/]', ctx.statement().getText()) or re.search(r'[(]', ctx.statement().getText()):
+                self.call = True
+                res = self.visit(ctx.statement())
+            else:
+                res = ctx.statement().getText()
+            target_code.append(
+                f"{var_name} = {res}")
+            self.cuadruplos.append(
+                ('<-', var_name, '-', res))
+        else:
+            target_code.append(
+                f"{var_name} = {expression_result}")
+            self.cuadruplos.append(
+                ('ASSIGN', expression_result, '-', var_name))
+
+    def visitExpression(self, ctx: yaplParser.ExpressionContext):
+        print("Entrando en Expression")
+        return self.visitChildren(ctx)
+
+    def visitAdditionExpression(self, ctx: yaplParser.AdditionExpressionContext):
+        print("visitAdditionExpression")
+        print(ctx.getText())
+        left = self.visit(ctx.expression(0)) or ctx.expression(0).getText()
+        right = self.visit(ctx.expression(1)) or ctx.expression(1).getText()
+        temp = self.new_temp()
+
+        self.cuadruplos.append(('+', left, right, temp))
+
+        if self.method_name:
+            target_code = self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"]
+        else:
+            target_code = self.code[self.class_name]
+
+        target_code.append(f"{temp} = {left} + {right}")
+        return temp
+
+    def visitSubtractionExpression(self, ctx: yaplParser.SubtractionExpressionContext):
+        print("visitSubtractionExpression")
+        print(ctx.getText())
+        left = self.visit(ctx.expression(0)) or ctx.expression(0).getText()
+        right = self.visit(ctx.expression(1)) or ctx.expression(1).getText()
+        temp = self.new_temp()
+
+        self.cuadruplos.append(('-', left, right, temp))
+
+        if self.method_name:
+            target_code = self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"]
+        else:
+            target_code = self.code[self.class_name]
+
+        target_code.append(f"{temp} = {left} - {right}")
+        return temp
+
+    def visitMultiplicationExpression(self, ctx: yaplParser.MultiplicationExpressionContext):
+        print("visitMultiplicationExpression")
+        print(ctx.getText())
+        left = self.visit(ctx.expression(0)) or ctx.expression(0).getText()
+        right = self.visit(ctx.expression(1)) or ctx.expression(1).getText()
+        temp = self.new_temp()
+
+        self.cuadruplos.append(('*', left, right, temp))
+
+        if self.method_name:
+            target_code = self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"]
+        else:
+            target_code = self.code[self.class_name]
+
+        target_code.append(f"{temp} = {left} * {right}")
+        return temp
+
+    def visitDivisionExpression(self, ctx: yaplParser.DivisionExpressionContext):
+        print("visitDivisionExpression")
+        print(ctx.getText())
+        left = self.visit(ctx.expression(0)) or ctx.expression(0).getText()
+        right = self.visit(ctx.expression(1)) or ctx.expression(1).getText()
+        temp = self.new_temp()
+
+        self.cuadruplos.append(('/', left, right, temp))
+
+        if self.method_name:
+            target_code = self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"]
+        else:
+            target_code = self.code[self.class_name]
+
+        target_code.append(f"{temp} = {left} / {right}")
+        return temp
 
 
 def main():
@@ -162,12 +384,23 @@ def main():
     # walker = ParseTreeWalker()
     # walker.walk(yl, tree)
 
+    myVisitor = MyVisitor()
+    result = myVisitor.visit(tree)
+
     # crear tabla de simbolos
     my_listener = MyListener()
     walker = ParseTreeWalker()
     walker.walk(my_listener, tree)
     data = pprint.pformat(my_listener.symbol_table.scopes)
     print("\nTabla de Simbolos: \n", data)
+
+    print("\nCódigo intermedio: \n")
+    for key, value in myVisitor.code.items():
+        print(key, ":", value)
+
+    print("\nCuadruplos: \n")
+    for cuadruplo in myVisitor.cuadruplos:
+        print(cuadruplo)
 
     # visualize_tree(tree, "arbol_sintactico.pdf")
 
