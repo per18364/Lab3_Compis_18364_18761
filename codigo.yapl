@@ -1,8 +1,10 @@
 class Main {
     void simpleFn(int z) {
         int x;
+        x <- 5ñ
         int y;
-        x <- x*y*z;
+        y <- 6;
+        x <- x+y+z;
     }
 
     void main() {

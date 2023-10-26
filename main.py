@@ -288,7 +288,7 @@ class MyVisitor(yaplVisitor):
         right = self.visit(ctx.expression(1)) or ctx.expression(1).getText()
         temp = self.new_temp()
 
-        self.cuadruplos.append(('+', left, right, temp))
+        self.cuadruplos.append(('add', temp, left, right))
 
         if self.method_name:
             target_code = self.code[self.class_name][-1][f"{self.class_name}.{self.method_name}:"]
